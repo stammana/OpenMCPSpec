@@ -1,0 +1,131 @@
+apiVersion: mcp.open/v1
+kind: MCPConfiguration
+metadata:
+  name: example-mcp-config
+  description: Unified configuration for logging, metrics, secrets, and policy in MCP
+  version: 0.1.0
+
+spec:
+  logProviders:
+    - name: splunk-main
+      type: splunk
+      endpoint: https://splunk.example.com:8088
+      token: ${SPLUNK_TOKEN}
+      index: main
+      sourcetype: mcp_logs
+    - name: elastic-default
+      type: elasticsearch
+      endpoint: https://elastic.example.com
+      index: mcp-logs
+      auth:
+        type: basic
+        username: ${ELASTIC_USER}
+        password: ${ELASTIC_PASS}
+    - name: sumologic-prod
+      type: sumologic
+      endpoint: https://endpoint1.collection.us2.sumologic.com/receiver/v1/http/<collector_id>
+      authToken: ${SUMO_TOKEN}
+
+  metricsProviders:
+    - name: prometheus-cluster
+      type: prometheus
+      scrapeInterval: 15s
+      endpoint: http://prometheus.mcp.local:9090
+    - name: datadog-agent
+      type: datadog
+      apiKey: ${DATADOG_API_KEY}
+      appKey: ${DATADOG_APP_KEY}
+      region: us
+
+  secrets:
+    provider: akeyless
+    config:
+      accessId: ${AKEYLESS_ACCESS_ID}
+      accessKey: ${AKEYLESS_ACCESS_KEY}
+      apiUrl: https://api.akeyless.io
+      secretsMapping:
+        SPLUNK_TOKEN: path/to/splunk/token
+        ELASTIC_USER: path/to/elastic/user
+        ELASTIC_PASS: path/to/elastic/pass
+        SUMO_TOKEN: path/to/sumologic/token
+        DATADOG_API_KEY: path/to/datadog/api_key
+        DATADOG_APP_KEY: path/to/datadog/app_key
+
+  rateLimiting:
+    globalLimit:
+      requestsPerMinute: 10000
+    perRouteLimits:
+      - route: /api/v1/logs
+        limit: 1000
+      - route: /api/v1/metrics
+        limit: 500
+      - route: /api/v1/secrets
+        limit: 100
+
+  policy:
+    format: opa
+    engine: rego
+    policies:
+      - id: enforce-namespace-is-set
+        description: Require all log entries to have a `namespace` label
+        type: validation
+        rule: |
+          package mcp.policies
+
+          default allow = false
+
+          allow {
+            input.namespace != ""
+          }
+
+      - id: allow-prometheus-only
+        description: Only allow Prometheus as a metrics provider
+        type: enforcement
+        rule: |
+          package mcp.policies
+
+          allow {
+            input.metricsProvider == "prometheus"
+          }
+
+      - id: disallow-sensitive-data-in-logs
+        description: Prevent logging of sensitive PCI data (e.g., card numbers, CVVs, PAN)
+        type: validation
+        rule: |
+          package mcp.policies
+
+          sensitive_patterns = [
+            "card_number",
+            "cvv",
+            "cvv2",
+            "pan",
+            "credit_card",
+            "ssn",
+            "social_security_number"
+          ]
+
+          default allow = false
+
+          allow {
+            not contains_sensitive_data(input.message)
+          }
+
+          contains_sensitive_data(msg) {
+            some i
+            sensitive_patterns[i] == key
+            msg[key]
+          }
+
+      - id: enforce-strict-access-logging
+        description: Ensure all access logs contain `user_id`, `ip_address`, and `timestamp` for traceability (PCI 10.2.x)
+        type: validation
+        rule: |
+          package mcp.policies
+
+          default allow = false
+
+          allow {
+            input.user_id != ""
+            input.ip_address != ""
+            input.timestamp != ""
+          }
